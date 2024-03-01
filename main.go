@@ -4,13 +4,10 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os/exec"
-	"runtime"
 	"sync"
 	"time"
 
-	"github.com/atotto/clipboard"
 	"github.com/gen2brain/beeep"
 	"github.com/getlantern/systray"
 )
@@ -36,16 +33,67 @@ func executable(command string) bool {
 	return err == nil
 }
 
-func doConnectionControl(m *systray.MenuItem, verb string) {
+func doConnect(m *systray.MenuItem) {
 	for {
 		if _, ok := <-m.ClickedCh; !ok {
 			break
 		}
-		b, err := exec.Command("pkexec", "tailscale", verb).CombinedOutput()
+
+		cmd := exec.Command("sudo", "tailscale", "up", "--accept-routes", "--shields-up", "--json")
+		stdout, err := cmd.StdoutPipe()
 		if err != nil {
 			beeep.Notify(
 				"Tailscale",
-				string(b),
+				err.Error(),
+				"",
+			)
+			continue
+		}
+		if err := cmd.Start(); err != nil {
+			beeep.Notify(
+				"Tailscale",
+				err.Error(),
+				"",
+			)
+			continue
+		}
+		var upResult struct {
+			AuthURL      string `json:"AuthURL"`
+			BackendState string `json:"BackendState"`
+		}
+		if err := json.NewDecoder(stdout).Decode(&upResult); err != nil {
+			beeep.Notify(
+				"Tailscale",
+				err.Error(),
+				"",
+			)
+			continue
+		}
+		if upResult.BackendState == "NeedsLogin" {
+			openBrowser(upResult.AuthURL)
+		}
+		if err := cmd.Wait(); err != nil {
+			beeep.Notify(
+				"Tailscale",
+				err.Error(),
+				"",
+			)
+			continue
+		}
+	}
+}
+
+func doDisconnect(m *systray.MenuItem) {
+	for {
+		if _, ok := <-m.ClickedCh; !ok {
+			break
+		}
+
+		cmd := exec.Command("sudo", "tailscale", "down")
+		if stdoutStderr, err := cmd.CombinedOutput(); err != nil {
+			beeep.Notify(
+				"Tailscale",
+				string(stdoutStderr),
 				"",
 			)
 		}
@@ -55,60 +103,68 @@ func doConnectionControl(m *systray.MenuItem, verb string) {
 func onReady() {
 	systray.SetIcon(iconOff)
 
+	mThisDevice := systray.AddMenuItem("", "")
+	//mThisDevice.Disable()
+	mStatus := systray.AddMenuItem("Status:", "")
+	//mStatus.Disable()
+
+	systray.AddSeparator()
+
 	mConnect := systray.AddMenuItem("Connect", "")
 	mConnect.Enable()
 	mDisconnect := systray.AddMenuItem("Disconnect", "")
 	mDisconnect.Disable()
 
-	if executable("pkexec") {
-		go doConnectionControl(mConnect, "up")
-		go doConnectionControl(mDisconnect, "down")
-	} else {
-		mConnect.Hide()
-		mDisconnect.Hide()
-	}
+	// if executable("pkexec") {
+	go doConnect(mConnect)
+	go doDisconnect(mDisconnect)
+	// } else {
+	//	mConnect.Hide()
+	//	mDisconnect.Hide()s
+	//}
 
 	systray.AddSeparator()
 
-	mThisDevice := systray.AddMenuItem("This device:", "")
-	go func(mThisDevice *systray.MenuItem) {
-		for {
-			_, ok := <-mThisDevice.ClickedCh
-			if !ok {
-				break
-			}
-			mu.RLock()
-			if myIP == "" {
+	/*
+		go func(mThisDevice *systray.MenuItem) {
+			for {
+				_, ok := <-mThisDevice.ClickedCh
+				if !ok {
+					break
+				}
+				mu.RLock()
+				if myIP == "" {
+					mu.RUnlock()
+					continue
+				}
+				err := clipboard.WriteAll(myIP)
+				if err == nil {
+					beeep.Notify(
+						"This device",
+						fmt.Sprintf("Copy the IP address (%s) to the Clipboard", myIP),
+						"",
+					)
+				}
 				mu.RUnlock()
-				continue
 			}
-			err := clipboard.WriteAll(myIP)
-			if err == nil {
-				beeep.Notify(
-					"This device",
-					fmt.Sprintf("Copy the IP address (%s) to the Clipboard", myIP),
-					"",
-				)
-			}
-			mu.RUnlock()
-		}
-	}(mThisDevice)
+		}(mThisDevice)
 
-	mNetworkDevices := systray.AddMenuItem("Network Devices", "")
-	mMyDevices := mNetworkDevices.AddSubMenuItem("My Devices", "")
-	mTailscaleServices := mNetworkDevices.AddSubMenuItem("Tailscale Services", "")
+		mNetworkDevices := systray.AddMenuItem("Network Devices", "")
+		mMyDevices := mNetworkDevices.AddSubMenuItem("My Devices", "")
+		mTailscaleServices := mNetworkDevices.AddSubMenuItem("Tailscale Services", "")
 
-	systray.AddSeparator()
-	mAdminConsole := systray.AddMenuItem("Admin Console...", "")
-	go func() {
-		for {
-			_, ok := <-mAdminConsole.ClickedCh
-			if !ok {
-				break
+		systray.AddSeparator()
+		mAdminConsole := systray.AddMenuItem("Admin Console...", "")
+		go func() {
+			for {
+				_, ok := <-mAdminConsole.ClickedCh
+				if !ok {
+					break
+				}
+				openBrowser("https://login.tailscale.com/admin/machines")
 			}
-			openBrowser("https://login.tailscale.com/admin/machines")
-		}
-	}()
+		}()
+	*/
 
 	systray.AddSeparator()
 
@@ -171,63 +227,80 @@ func onReady() {
 				v.found = false
 			}
 
-			mThisDevice.SetTitle(fmt.Sprintf("This device: %s (%s)", status.Self.DisplayName.String(), myIP))
+			var statusStr string
+			if status.TailscaleUp {
+				statusStr = "Connected"
+			} else {
+				statusStr = "Disconnected"
+			}
+			keyLeft := status.Self.KeyExpiry.Sub(time.Now())
+			var keyLeftStr string
+			if keyLeft > 0 {
+				keyLeftStr = fmt.Sprintf("key expires in %s", keyLeft.Round(time.Second))
+			} else {
+				keyLeftStr = "key expired"
+			}
+			mStatus.SetTitle(fmt.Sprintf("%s (%s)", statusStr, keyLeftStr))
 
-			for _, peer := range status.Peers {
-				ip := peer.TailscaleIPs[0]
-				peerName := peer.DisplayName
-				title := peerName.String()
+			mThisDevice.SetTitle(fmt.Sprintf("%s (%s)", status.Self.DisplayName.String(), myIP))
 
-				var sub *systray.MenuItem
-				switch peerName.(type) {
-				case DNSName:
-					sub = mMyDevices
-				case HostName:
-					sub = mTailscaleServices
-				}
+			/*
+				for _, peer := range status.Peers {
+					ip := peer.TailscaleIPs[0]
+					peerName := peer.DisplayName
+					title := peerName.String()
 
-				if item, ok := items[title]; ok {
-					item.found = true
-				} else {
-					items[title] = &Item{
-						menu:  sub.AddSubMenuItem(title, title),
-						title: title,
-						ip:    ip,
-						found: true,
+					var sub *systray.MenuItem
+					switch peerName.(type) {
+					case DNSName:
+						sub = mMyDevices
+					case HostName:
+						sub = mTailscaleServices
 					}
-					go func(item *Item) {
-						// TODO fix race condition
-						for {
-							_, ok := <-item.menu.ClickedCh
-							if !ok {
-								break
-							}
-							err := clipboard.WriteAll(item.ip)
-							if err != nil {
+
+					if item, ok := items[title]; ok {
+						item.found = true
+					} else {
+						items[title] = &Item{
+							menu:  sub.AddSubMenuItem(title, title),
+							title: title,
+							ip:    ip,
+							found: true,
+						}
+						go func(item *Item) {
+							// TODO fix race condition
+							for {
+								_, ok := <-item.menu.ClickedCh
+								if !ok {
+									break
+								}
+								err := clipboard.WriteAll(item.ip)
+								if err != nil {
+									beeep.Notify(
+										"Tailscale",
+										err.Error(),
+										"",
+									)
+									return
+								}
 								beeep.Notify(
-									"Tailscale",
-									err.Error(),
+									item.title,
+									fmt.Sprintf("Copy the IP address (%s) to the Clipboard", item.ip),
 									"",
 								)
-								return
 							}
-							beeep.Notify(
-								item.title,
-								fmt.Sprintf("Copy the IP address (%s) to the Clipboard", item.ip),
-								"",
-							)
-						}
-					}(items[title])
+						}(items[title])
+					}
 				}
-			}
 
-			for k, v := range items {
-				if !v.found {
-					// TODO fix race condition
-					v.menu.Hide()
-					delete(items, k)
+				for k, v := range items {
+					if !v.found {
+						// TODO fix race condition
+						v.menu.Hide()
+						delete(items, k)
+					}
 				}
-			}
+			*/
 
 			time.Sleep(10 * time.Second)
 		}
@@ -235,18 +308,11 @@ func onReady() {
 }
 
 func openBrowser(url string) {
-	var err error
-	switch runtime.GOOS {
-	case "linux":
-		err = exec.Command("xdg-open", url).Start()
-	case "windows":
-		err = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
-	case "darwin":
-		err = exec.Command("open", url).Start()
-	default:
-		err = fmt.Errorf("unsupported platform")
-	}
-	if err != nil {
-		log.Printf("could not open link: %v", err)
+	if err := exec.Command("xdg-open", url).Start(); err != nil {
+		beeep.Notify(
+			"Tailscale",
+			"could not open link: "+err.Error(),
+			"",
+		)
 	}
 }

@@ -3,12 +3,13 @@ package main
 import (
 	"encoding/json"
 	"strings"
+	"time"
 )
 
 type Status struct {
 	TailscaleUp bool
-	Self  Machine
-	Peers map[string]Machine
+	Self        Machine
+	Peers       map[string]Machine
 }
 
 type Machine struct {
@@ -35,8 +36,8 @@ func (s *Status) UnmarshalJSON(data []byte) error {
 
 	*s = Status{
 		TailscaleUp: isRunning,
-		Self:  self,
-		Peers: peers,
+		Self:        self,
+		Peers:       peers,
 	}
 
 	return nil
@@ -50,9 +51,10 @@ type rawStatus struct {
 }
 
 type RawMachine struct {
-	DNSName      string   `json:"DNSName"`
-	HostName     string   `json:"HostName"`
-	TailscaleIPs []string `json:"TailscaleIPs"`
+	DNSName      string    `json:"DNSName"`
+	HostName     string    `json:"HostName"`
+	TailscaleIPs []string  `json:"TailscaleIPs"`
+	KeyExpiry    time.Time `json:"KeyExpiry"`
 }
 
 func (rm RawMachine) ToMachine(dnsSuffix string) Machine {
