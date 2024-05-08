@@ -126,47 +126,48 @@ func onReady() {
 	systray.AddSeparator()
 
 	/*
-		go func(mThisDevice *systray.MenuItem) {
-			for {
-				_, ok := <-mThisDevice.ClickedCh
-				if !ok {
-					break
-				}
-				mu.RLock()
-				if myIP == "" {
+			go func(mThisDevice *systray.MenuItem) {
+				for {
+					_, ok := <-mThisDevice.ClickedCh
+					if !ok {
+						break
+					}
+					mu.RLock()
+					if myIP == "" {
+						mu.RUnlock()
+						continue
+					}
+					err := clipboard.WriteAll(myIP)
+					if err == nil {
+						beeep.Notify(
+							"This device",
+							fmt.Sprintf("Copy the IP address (%s) to the Clipboard", myIP),
+							"",
+						)
+					}
 					mu.RUnlock()
-					continue
 				}
-				err := clipboard.WriteAll(myIP)
-				if err == nil {
-					beeep.Notify(
-						"This device",
-						fmt.Sprintf("Copy the IP address (%s) to the Clipboard", myIP),
-						"",
-					)
-				}
-				mu.RUnlock()
-			}
-		}(mThisDevice)
+			}(mThisDevice)
 
-		mNetworkDevices := systray.AddMenuItem("Network Devices", "")
-		mMyDevices := mNetworkDevices.AddSubMenuItem("My Devices", "")
-		mTailscaleServices := mNetworkDevices.AddSubMenuItem("Tailscale Services", "")
+			mNetworkDevices := systray.AddMenuItem("Network Devices", "")
+			mMyDevices := mNetworkDevices.AddSubMenuItem("My Devices", "")
+			mTailscaleServices := mNetworkDevices.AddSubMenuItem("Tailscale Services", "")
+
+			systray.AddSeparator()
+			mAdminConsole := systray.AddMenuItem("Admin Console...", "")
+			go func() {
+				for {
+					_, ok := <-mAdminConsole.ClickedCh
+					if !ok {
+						break
+					}
+					openBrowser("https://login.tailscale.com/admin/machines")
+				}
+			}()
 
 		systray.AddSeparator()
-		mAdminConsole := systray.AddMenuItem("Admin Console...", "")
-		go func() {
-			for {
-				_, ok := <-mAdminConsole.ClickedCh
-				if !ok {
-					break
-				}
-				openBrowser("https://login.tailscale.com/admin/machines")
-			}
-		}()
-	*/
 
-	systray.AddSeparator()
+	*/
 
 	mExit := systray.AddMenuItem("Exit", "")
 	go func() {
@@ -236,7 +237,7 @@ func onReady() {
 			keyLeft := status.Self.KeyExpiry.Sub(time.Now())
 			var keyLeftStr string
 			if keyLeft > 0 {
-				keyLeftStr = fmt.Sprintf("key expires in %s", keyLeft.Round(time.Second))
+				keyLeftStr = fmt.Sprintf("key expires in %s", formatDuration(keyLeft))
 			} else {
 				keyLeftStr = "key expired"
 			}
@@ -315,4 +316,27 @@ func openBrowser(url string) {
 			"",
 		)
 	}
+}
+
+func formatDuration(d time.Duration) string {
+	seconds := int(d.Seconds())
+	days, seconds := formatDurationHelper(seconds, 60*60*24)
+	hours, seconds := formatDurationHelper(seconds, 60*60)
+	minutes, seconds := formatDurationHelper(seconds, 60)
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm %ds", days, hours, minutes, seconds)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm %ds", hours, minutes, seconds)
+	}
+	if minutes > 0 {
+		return fmt.Sprintf("%dm %ds", minutes, seconds)
+	}
+	return fmt.Sprintf("%ds", seconds)
+}
+
+func formatDurationHelper(seconds int, size int) (int, int) {
+	count := seconds / size
+	remainder := seconds - count*size
+	return count, remainder
 }
